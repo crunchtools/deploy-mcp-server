@@ -77,6 +77,15 @@ ssh -p 22422 root@lotor.dc3.crunchtools.com
 
 **breetai:** The env file lives locally at `~/.config/mcp-env/`.
 
+### Additional Config Files
+
+Some servers need config files beyond environment variables (e.g., trust allowlists, domain configs). Check the server's `config.py` for any file paths it reads. Common patterns:
+
+- **Trust config:** `~/.config/mcp-env/mcp-<name>-trust.json` — trusted domains/paths for bypass rules
+- **Database:** Servers with SQLite databases need a persistent data directory (see Phase 3 volume mounts)
+
+Create any additional config files the server expects, with correct permissions (`chmod 600`).
+
 ---
 
 ## Phase 3: Container Deployment (lotor only)
@@ -109,6 +118,20 @@ EOF
 
 systemctl --user daemon-reload
 systemctl --user enable --now mcp-<name>.service
+```
+
+**Stateful servers:** If the server uses a database or persistent storage, add volume mounts to the `ExecStart` line before the image name:
+
+```
+    -v %h/.local/share/mcp-<name>:/data:Z \
+```
+
+Create the host directory first: `mkdir -p ~/.local/share/mcp-<name>`
+
+If the server reads additional config files (trust configs, etc.), mount those too:
+
+```
+    -v %h/.config/mcp-env/mcp-<name>-trust.json:/root/.config/mcp-env/mcp-<name>-trust.json:ro,Z \
 ```
 
 ### Step 2: Verify Container
