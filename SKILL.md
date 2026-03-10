@@ -58,7 +58,27 @@ Confirm with the user:
 
 ## Phase 2: Environment Setup
 
-Create the environment file:
+Ask the user for the actual credential values.
+
+### lotor (root services)
+
+SSH to lotor and create the env file under `/srv/`:
+
+```bash
+ssh -p 22422 root@lotor.dc3.crunchtools.com
+mkdir -p /srv/mcp-<name>.crunchtools.com/config
+cat > /srv/mcp-<name>.crunchtools.com/config/mcp-<name>.env << 'EOF'
+<SERVICE_URL>=https://...
+<SERVICE_TOKEN>=...
+EOF
+chmod 600 /srv/mcp-<name>.crunchtools.com/config/mcp-<name>.env
+```
+
+Lotor convention: all service data lives under `/srv/<hostname>/` with subdirectories `config/`, `code/` (git-ignored), and `data/` (git-ignored).
+
+### breetai (user services)
+
+Create the env file locally:
 
 ```bash
 cat > ~/.config/mcp-env/mcp-<name>.env << 'EOF'
@@ -68,31 +88,65 @@ EOF
 chmod 600 ~/.config/mcp-env/mcp-<name>.env
 ```
 
-Ask the user for the actual credential values.
-
-**lotor:** The env file lives on lotor at `~/.config/mcp-env/`. SSH to lotor to create it:
-```bash
-ssh -p 22422 root@lotor.dc3.crunchtools.com
-```
-
-**breetai:** The env file lives locally at `~/.config/mcp-env/`.
-
 ### Additional Config Files
 
 Some servers need config files beyond environment variables (e.g., trust allowlists, domain configs). Check the server's `config.py` for any file paths it reads. Common patterns:
 
-- **Trust config:** `~/.config/mcp-env/mcp-<name>-trust.json` — trusted domains/paths for bypass rules
+- **Trust config:** trust.json files with domain/path allowlists
 - **Database:** Servers with SQLite databases need a persistent data directory (see Phase 3 volume mounts)
 
 Create any additional config files the server expects, with correct permissions (`chmod 600`).
 
+**Do NOT proceed to Phase 3 until all credentials and config files are in place.**
+
 ---
 
-## Phase 3: Container Deployment (lotor only)
+## Phase 3: Container Deployment
 
-Skip this phase for breetai deployments.
+### lotor (root system service)
 
-### Step 1: Create systemd Service
+Systemd units on lotor MUST be regular files in `/etc/systemd/system/` (NOT symlinks — SELinux rejects symlinked unit files on bootc).
+
+```bash
+cat > /etc/systemd/system/mcp-<name>.crunchtools.com.service << 'EOF'
+[Unit]
+Description=MCP <Name> Server (Streamable HTTP)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/podman run --rm --name mcp-<name> \
+    -p 127.0.0.1:<PORT>:<PORT> \
+    --env-file /srv/mcp-<name>.crunchtools.com/config/mcp-<name>.env \
+    quay.io/crunchtools/mcp-<name>:latest \
+    --transport streamable-http --host 0.0.0.0 --port <PORT>
+ExecStop=/usr/bin/podman stop mcp-<name>
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now mcp-<name>.crunchtools.com.service
+```
+
+**Stateful servers:** Add volume mounts to the `ExecStart` line before the image name:
+
+```
+    -v /srv/mcp-<name>.crunchtools.com/data:/data:Z \
+```
+
+Create the host directory first: `mkdir -p /srv/mcp-<name>.crunchtools.com/data`
+
+**Config file mounts:** If the server reads additional config files (trust configs, etc.):
+
+```
+    -v /srv/mcp-<name>.crunchtools.com/config/trust.json:/root/.config/mcp-env/mcp-<name>-trust.json:ro,Z \
+```
+
+### breetai (user service)
 
 ```bash
 cat > ~/.config/systemd/user/mcp-<name>.service << 'EOF'
@@ -120,7 +174,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now mcp-<name>.service
 ```
 
-**Stateful servers:** If the server uses a database or persistent storage, add volume mounts to the `ExecStart` line before the image name:
+**Stateful servers:** Add volume mounts before the image name:
 
 ```
     -v %h/.local/share/mcp-<name>:/data:Z \
@@ -128,14 +182,15 @@ systemctl --user enable --now mcp-<name>.service
 
 Create the host directory first: `mkdir -p ~/.local/share/mcp-<name>`
 
-If the server reads additional config files (trust configs, etc.), mount those too:
+### Verify Container
 
+**lotor:**
+```bash
+systemctl status mcp-<name>.crunchtools.com.service
+curl -s http://127.0.0.1:<PORT>/mcp | head
 ```
-    -v %h/.config/mcp-env/mcp-<name>-trust.json:/root/.config/mcp-env/mcp-<name>-trust.json:ro,Z \
-```
 
-### Step 2: Verify Container
-
+**breetai:**
 ```bash
 systemctl --user status mcp-<name>.service
 curl -s http://127.0.0.1:<PORT>/mcp | head
