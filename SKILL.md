@@ -268,6 +268,10 @@ command[check_ctr_mem_mcp_<name>]=/usr/local/nagios/libexec/check_container_memo
 
 In `/srv/nagios.crunchtools.com/config/services/container-hosts.cfg`, add the host and its `Container memory` and `MCP port` services, and add the host to the `mcp-services` hostgroup members. The `MCP port` service is what marks the port taken for the next deploy.
 
+In `nrpe-dependency.cfg` (same directory), add `ctr-mcp-<name>.crunchtools.com,MCP port` to the `nrpe-fast-pool` members and `ctr-mcp-<name>.crunchtools.com,Container memory` to `nrpe-ctr-pool`, so an NRPE daemon outage suppresses these checks instead of paging them.
+
+`/srv` on lotor is a git repo (`fatherlinux/lotor.dc3.crunchtools.com-srv`) watched by the Git Drift check: commit and push exactly the files you changed, never `git add -A`.
+
 ```
 define host {
     use                 crunchtools-mcp-container
@@ -294,7 +298,7 @@ define service {
 
 ```bash
 ssh lotor "systemctl restart nagios-agent.crunchtools.com nagios-agent-ctr.crunchtools.com"
-ssh lotor "podman exec nagios.crunchtools.com /usr/local/nagios/bin/nagios -v /usr/local/nagios/etc/nagios.cfg && systemctl restart nagios.crunchtools.com"
+ssh lotor "podman exec nagios.crunchtools.com /usr/sbin/nagios -v /etc/nagios/nagios.cfg && systemctl restart nagios.crunchtools.com"
 ```
 
 NRPE reads its config only at start, so the agents restart first (this trips the agents' cross-watch restart checks; that is expected). `nagios -v` runs in the container and `systemctl` on the lotor host; the `&&` means a failed validation never restarts Nagios (it would not come back up). On failure, fix the file and line it names and re-run. If a check stays red after two cycles, run its NRPE command by hand (`ssh lotor "podman exec nagios.crunchtools.com /usr/lib64/nagios/plugins/check_nrpe -H 10.88.0.1 -p 5666 -c check_tcp_<PORT>"`; container checks use port 5667) to see the raw output.
