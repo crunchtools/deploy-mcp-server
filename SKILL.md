@@ -250,6 +250,8 @@ Skip this phase for breetai deployments.
 
 All MCP servers on lotor get three Nagios checks: container running, container memory, and a TCP port check. All run through the NRPE agent, because MCP ports are loopback-only on lotor. Nagios config is file-based — the same files `/decommission` removes entries from, edited in reverse here.
 
+Placeholders below: the container is `mcp-<name>` (`<name>` lowercase, hyphens, exactly as in the container name); `<PORT>` is the integer port chosen in Phase 1.
+
 ### 6a: NRPE Commands (agent side)
 
 Add the commands in `crunchtools/nagios-agent` (source of truth) and copy them to `/srv/nagios-agent.crunchtools.com/config/` on lotor, copying an existing `mcp-*` entry and changing only the name and port:
@@ -264,7 +266,7 @@ command[check_ctr_mem_mcp_<name>]=/usr/local/nagios/libexec/check_container_memo
 
 ### 6b: Service Definitions (server side)
 
-In `/srv/nagios.crunchtools.com/config/services/container-hosts.cfg`, add the host and its two services, and add the host to the `mcp-services` hostgroup members. `<name>` is the container name without `mcp-` (lowercase, hyphens); `<PORT>` is the port from Phase 1. The `MCP port` service is what marks the port taken for the next deploy.
+In `/srv/nagios.crunchtools.com/config/services/container-hosts.cfg`, add the host and its `Container memory` and `MCP port` services, and add the host to the `mcp-services` hostgroup members. The `MCP port` service is what marks the port taken for the next deploy.
 
 ```
 define host {
@@ -291,10 +293,11 @@ define service {
 ### 6c: Validate and Restart
 
 ```bash
+ssh lotor "systemctl restart nagios-agent.crunchtools.com nagios-agent-ctr.crunchtools.com"
 ssh lotor "podman exec nagios.crunchtools.com /usr/local/nagios/bin/nagios -v /usr/local/nagios/etc/nagios.cfg && systemctl restart nagios.crunchtools.com"
 ```
 
-`nagios -v` runs in the container and `systemctl` on the lotor host; the `&&` means a failed validation never restarts Nagios (it would not come back up). On failure, fix the file and line it names and re-run. If a check stays red after two cycles, run its NRPE command by hand (`ssh lotor "podman exec nagios.crunchtools.com /usr/lib64/nagios/plugins/check_nrpe -H 10.88.0.1 -p 5666 -c check_tcp_<PORT>"`; container checks use port 5667) to see the raw output.
+NRPE reads its config only at start, so the agents restart first (this trips the agents' cross-watch restart checks; that is expected). `nagios -v` runs in the container and `systemctl` on the lotor host; the `&&` means a failed validation never restarts Nagios (it would not come back up). On failure, fix the file and line it names and re-run. If a check stays red after two cycles, run its NRPE command by hand (`ssh lotor "podman exec nagios.crunchtools.com /usr/lib64/nagios/plugins/check_nrpe -H 10.88.0.1 -p 5666 -c check_tcp_<PORT>"`; container checks use port 5667) to see the raw output.
 
 ### 6d: Verify Checks
 
