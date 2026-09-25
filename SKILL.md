@@ -2,7 +2,7 @@
 name: deploy-mcp-server
 description: Deploy a CrunchTools MCP server to breetai (laptop) or lotor (web server) with monitoring
 argument-hint: "<server-name, e.g. airlock, gemini, gitlab>"
-allowed-tools: Read, Write, Edit, Bash, AskUserQuestion, Grep, Glob, Task, mcp__memory__memory_search, mcp__memory__memory_store, mcp__zabbix__host_get, mcp__zabbix__item_create, mcp__zabbix__item_get, mcp__zabbix__trigger_create, mcp__zabbix__trigger_get, mcp__zabbix__hostgroup_get
+allowed-tools: Read, Write, Edit, Bash, AskUserQuestion, Grep, Glob, Agent, mcp__trentina__memory__memory_search, mcp__trentina__memory__memory_store, mcp__trentina__nagios__nagios_host_status_tool, mcp__trentina__nagios__nagios_service_status_tool
 ---
 
 # Deploy a CrunchTools MCP Server
@@ -23,8 +23,7 @@ Deploy a built MCP server to a target host. Use this after `/draft-mcp-server` h
 ### Step 1: Search Memory
 
 Search memory for the server's build details:
-- `memory_search` for the server name (port, env vars, tool count)
-- `memory_search` for "MCP architecture" to load port allocation and patterns
+- `memory_search` for the server name (port, env vars, tool count). Port allocation comes from Nagios, not memory (Step 3)
 - `memory_search` for "lotor infrastructure" or "breetai" for host context
 
 ### Step 2: Select Target Host
@@ -33,7 +32,7 @@ Ask the user with `AskUserQuestion`:
 
 | Host | Type | When to Use |
 |------|------|-------------|
-| **lotor** | Production web server | Containerized, systemd-managed, Zabbix-monitored, always-on |
+| **lotor** | Production web server | Containerized, systemd-managed, Nagios-monitored, always-on |
 | **breetai** | Interactive laptop | Development, testing, or stdio-only servers |
 
 The target determines which phases apply:
@@ -44,13 +43,13 @@ The target determines which phases apply:
 | Container Deployment | yes | no |
 | Claude Code Configuration | yes (HTTP) | yes (stdio or HTTP) |
 | Verification | yes | yes |
-| Zabbix Monitoring | yes | no |
+| Nagios Monitoring | yes | no |
 
 ### Step 3: Confirm Details
 
 Confirm with the user:
 - **Server name** (e.g., `mcp-airlock`)
-- **HTTP port** (check `~/Projects/MCP_ARCHITECTURE.md` for next available)
+- **HTTP port** — Nagios is the port registry: take the next port above the highest `check_tcp_<port>` in `crunchtools/nagios-agent` `deploy/nagios-agent/nrpe-host.cfg`, and confirm it is free with `ssh lotor ss -ltn`
 - **Environment variables** needed (API keys, URLs, tokens)
 - **Container image** (e.g., `quay.io/crunchtools/mcp-airlock:latest`)
 
@@ -245,97 +244,73 @@ Test the MCP tools work by calling a read operation (e.g., site info, search, li
 
 ---
 
-## Phase 6: Zabbix Monitoring (lotor only)
+## Phase 6: Nagios Monitoring (lotor only)
 
 Skip this phase for breetai deployments.
 
-All MCP servers on lotor get three-layer Zabbix monitoring. The monitoring items live on the lotor host (hostid `10698`, interfaceid `45`), not on separate Zabbix hosts.
+All MCP servers on lotor get three Nagios checks: container running, container memory, and a TCP port check. All run through the NRPE agent, because MCP ports are loopback-only on lotor. Nagios config is file-based — the same files `/decommission` removes entries from, edited in reverse here.
 
-### 6a: TCP Port Check
+### 6a: NRPE Commands (agent side)
 
-Create a `net.tcp.service` item on lotor to verify the MCP server port is reachable:
-
-```
-item_create:
-  name: "MCP <Name> Port <PORT>"
-  key_: "net.tcp.service[http,127.0.0.1,<PORT>]"
-  hostid: "10698"
-  type: 0          # Zabbix agent
-  value_type: 3    # unsigned integer (1=up, 0=down)
-  delay: "1m"
-```
-
-Use the `mcp__zabbix__item_create` tool. If the Zabbix MCP server is in read-only mode, tell the user to create the item manually via the Zabbix web UI or enable Zabbix writes temporarily.
-
-### 6b: TCP Port Trigger
-
-Create a trigger that fires when the port is unreachable for 5 minutes:
+Add the commands in `crunchtools/nagios-agent` (source of truth) and copy them to `/srv/nagios-agent.crunchtools.com/config/` on lotor, copying an existing `mcp-*` entry and changing only the name and port:
+- `deploy/nagios-agent/nrpe-host.cfg` (fast pool, :5666): `check_tcp_<PORT>`
+- `deploy/nagios-agent/nrpe-ctr.cfg` (container pool, :5667): `check_ctr_run_mcp_<name>` and `check_ctr_mem_mcp_<name>`
 
 ```
-trigger_create:
-  description: "MCP <Name> port <PORT> is unreachable"
-  expression: "max(/lotor.dc3.crunchtools.com/net.tcp.service[http,127.0.0.1,<PORT>],5m)=0"
-  priority: 4      # HIGH
-  tags: [{"tag": "host", "value": "lotor.dc3.crunchtools.com"}, {"tag": "service", "value": "mcp-<name>"}]
+command[check_tcp_<PORT>]=/usr/local/nagios/libexec/check_tcp_local.sh <PORT>
+command[check_ctr_run_mcp_<name>]=/usr/local/nagios/libexec/check_container_running.sh mcp-<name>
+command[check_ctr_mem_mcp_<name>]=/usr/local/nagios/libexec/check_container_memory.sh mcp-<name> 85 95
 ```
 
-### 6c: service-checker.py
+### 6b: Service Definitions (server side)
 
-Tell the user to add the new container to `/srv/zabbix-agent/scripts/service-checker.py` on lotor. The entry format is:
-
-```python
-("mcp-<name>", "svc.mcp-<name>", "python"),
-```
-
-This checks that a Python process is running inside the container via `podman exec mcp-<name> pgrep -c python` and sends the count to Zabbix via the trapper protocol every 60 seconds.
-
-A corresponding trapper item must also be created on lotor:
+In `/srv/nagios.crunchtools.com/config/services/container-hosts.cfg`, add the host and its two services, and add the host to the `mcp-services` hostgroup members. `<name>` is the container name without `mcp-` (lowercase, hyphens); `<PORT>` is the port from Phase 1. The `MCP port` service is what marks the port taken for the next deploy.
 
 ```
-item_create:
-  name: "MCP <Name> Process"
-  key_: "svc.mcp-<name>"
-  hostid: "10698"
-  type: 2          # Zabbix trapper
-  value_type: 3    # unsigned integer (process count)
+define host {
+    use                 crunchtools-mcp-container
+    host_name           ctr-mcp-<name>.crunchtools.com
+    alias               mcp-<name> container
+    address             10.88.0.1
+    check_command       check_nrpe_ctr!10.88.0.1!check_ctr_run_mcp_<name>
+}
+define service {
+    use                 crunchtools-service
+    host_name           ctr-mcp-<name>.crunchtools.com
+    service_description Container memory
+    check_command       check_nrpe_ctr!10.88.0.1!check_ctr_mem_mcp_<name>
+}
+define service {
+    use                 crunchtools-service
+    host_name           ctr-mcp-<name>.crunchtools.com
+    service_description MCP port
+    check_command       check_nrpe_command!10.88.0.1!check_tcp_<PORT>
+}
 ```
 
-### 6d: Service Tree (Running Instance)
+### 6c: Validate and Restart
 
-The Zabbix dashboard at `https://zabbix.crunchtools.com/service-tree.php` displays all monitored services in a visual tree. New MCP servers must be added to the service tree so they appear on the dashboard.
+```bash
+ssh lotor "podman exec nagios.crunchtools.com /usr/local/nagios/bin/nagios -v /usr/local/nagios/etc/nagios.cfg && systemctl restart nagios.crunchtools.com"
+```
 
-The service-tree.php file lives at `/srv/zabbix.crunchtools.com/code/service-tree.php` on lotor (mounted into the Zabbix container). It queries Zabbix for `web.test.fail` (web scenarios), `net.tcp.service` (port checks), and `svc.*` (trapper items) and renders them as a status tree.
+`nagios -v` runs in the container and `systemctl` on the lotor host; the `&&` means a failed validation never restarts Nagios (it would not come back up). On failure, fix the file and line it names and re-run. If a check stays red after two cycles, run its NRPE command by hand (`ssh lotor "podman exec nagios.crunchtools.com /usr/lib64/nagios/plugins/check_nrpe -H 10.88.0.1 -p 5666 -c check_tcp_<PORT>"`; container checks use port 5667) to see the raw output.
 
-To add the new MCP server to the dashboard:
+### 6d: Verify Checks
 
-1. SSH to lotor and edit `/srv/zabbix.crunchtools.com/code/service-tree.php`
-2. Add the MCP server's port to the TCP check display section
-3. Add the `svc.mcp-<name>` trapper item to the `$svc_display_names` array:
-   ```php
-   'svc.mcp-<name>' => 'MCP <Name>',
-   ```
-4. Verify the new entry appears at `https://zabbix.crunchtools.com/service-tree.php`
+Use `nagios_service_status_tool` to confirm the new checks appear and go green (the first check cycle can take a couple of minutes). `nagios_host_status_tool` confirms lotor itself is still OK.
 
-MCP servers are loopback-only (no public HTTPS), so they appear in the service tree under lotor's TCP port checks and process checks, not as separate hosts with web scenarios.
+**Gate:** do not proceed to Phase 7 until the host and both services are OK.
 
 ---
 
-## Phase 7: Update MCP Architecture Doc
-
-Update `~/Projects/MCP_ARCHITECTURE.md`:
-- Add the server to the port allocation table (lotor) or stdio table (breetai)
-- Update the version table
-- Update the total server count and tool count
-
----
-
-## Phase 8: Store in Memory
+## Phase 7: Store in Memory
 
 Store the deployment details using `memory_store`:
 - Target host (breetai or lotor)
 - Port number and transport type
 - systemd service name (if lotor)
-- Zabbix items created
+- Nagios checks added
 - Any deployment-specific notes or workarounds
 
 ---
@@ -350,6 +325,5 @@ Port:           <PORT or n/a>
 Systemd:        <service name or n/a>
 Env File:       ~/.config/mcp-env/mcp-<name>.env
 Claude Config:  ~/.claude.json
-Zabbix:         <TCP port check + trapper on lotor (10698) or n/a>
-Service Tree:   <lotor running instance section or n/a>
+Monitoring:     <Nagios host/service checks added, or n/a>
 ```
