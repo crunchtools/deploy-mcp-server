@@ -1,0 +1,6 @@
+[[exceptions]]
+check = "summary_litter"
+path = "SKILL.md"
+justification = "Claude Code skill definition; the skill format requires SKILL.md at the root of the installed skill directory, and this repo root is what gets installed/symlinked"
+classification = "by_design"
+
