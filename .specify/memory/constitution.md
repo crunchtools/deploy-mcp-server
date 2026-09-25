@@ -27,13 +27,14 @@ Follow Semantic Versioning 2.0.0. MAJOR/MINOR/PATCH.
 
 ## Memory Integration
 
-- Phase 1 Step 1: Searches memory for server build details, port allocation, host context
-- Phase 8: Stores deployment details (target host, port, systemd service, Zabbix items)
+- Phase 1 Step 1: Searches memory for server build details and host context; port allocation comes from Nagios (Phase 1 Step 3)
+- Phase 7: Stores deployment details (target host, port, systemd service, Nagios checks)
 
 ## User Confirmation Gates
 
 - Phase 1 → Phase 2: User confirms target host, port, env vars, container image
 - Phase 5: Verification — MCP tools respond to test calls
+- Phase 6 → Phase 7: Nagios host and services are OK
 
 ## Relationship to Other Skills
 
