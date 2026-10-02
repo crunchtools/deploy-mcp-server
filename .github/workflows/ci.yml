@@ -11,7 +11,7 @@ jobs:
     name: Skill Structure Validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check SKILL.md exists
         run: test -s SKILL.md
