@@ -1,0 +1,33 @@
+name: Validate Skill
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-skill:
+    name: Skill Structure Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check SKILL.md exists
+        run: test -s SKILL.md
+
+      - name: Check YAML frontmatter
+        run: |
+          head -1 SKILL.md | grep -q '^---$' || { echo "FAIL: Missing YAML frontmatter"; exit 1; }
+          grep -q '^name:' SKILL.md || { echo "FAIL: Missing name field"; exit 1; }
+          grep -q '^description:' SKILL.md || { echo "FAIL: Missing description field"; exit 1; }
+          grep -q '^argument-hint:' SKILL.md || { echo "FAIL: Missing argument-hint field"; exit 1; }
+          grep -q '^allowed-tools:' SKILL.md || { echo "FAIL: Missing allowed-tools field"; exit 1; }
+          echo "All frontmatter fields present"
+
+      - name: Check phased workflow structure
+        run: |
+          phase_count=$(grep -c '^## Phase [0-9]' SKILL.md)
+          echo "Found $phase_count phases"
+          test "$phase_count" -ge 2 || { echo "FAIL: Fewer than 2 phases found"; exit 1; }
+          echo "Workflow structure valid"
