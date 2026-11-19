@@ -11,6 +11,8 @@ are not recorded here. Entries accrue from 2026-09-19 forward (RT #1484).
 
 ### Changed
 
+- Gatehouse triage gets `review_result` from the review job, so a pull request
+  whose review died before posting anything is held instead of passing.
 - Constitution is now a v1.18.0 manifest: fleet and profile rules apply by
   reference, and the file keeps only what is specific to this repo.
 - Constitution validation is pinned to the inherited release via
